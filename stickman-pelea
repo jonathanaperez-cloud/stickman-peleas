@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Dash - Físicas Calibradas</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+        }
+        body {
+            background-color: #0d0d1a;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+        }
+        #game-wrapper {
+            position: relative;
+            width: 800px;
+            max-width: 95vw;
+            height: 400px;
+            border: 3px solid #00f3ff;
+            border-radius: 10px;
+            box-shadow: 0 0 25px rgba(0, 243, 255, 0.4);
+            overflow: hidden;
+            background: #14142b;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 15px;
+            left: 20px;
+            right: 20px;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: none;
+            font-weight: bold;
+            font-size: 1.1rem;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+        #progress-container {
+            width: 250px;
+            height: 12px;
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            align-self: center;
+        }
+        #progress-bar {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #00f3ff, #00ff88);
+        }
+        #start-screen, #win-screen {
+            position: absolute;
+            inset: 0;
+            background: rgba(13, 13, 26, 0.85);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            z-index: 10;
+        }
+        .hidden {
+            display: none !important;
+        }
+        h1 {
+            font-size: 2.8rem;
+            color: #00f3ff;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            margin-bottom: 10px;
+            text-shadow: 0 0 15px #00f3ff;
+        }
+        p {
+            color: #ccc;
+            margin-bottom: 25px;
+            font-size: 1.1rem;
+        }
+        button {
+            background: linear-gradient(45deg, #ff007f, #ff5e00);
+            border: none;
+            color: white;
+            padding: 14px 36px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(255, 0, 127, 0.5);
+            transition: transform 0.15s;
+        }
+        button:hover {
+            transform: scale(1.06);
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-wrapper">
+    <canvas id="gameCanvas" width="800" height="400"></canvas>
+    
+    <div id="ui-overlay">
+        <div id="attempt-display">INTENTO 1</div>
+        <div id="progress-container">
+            <div id="progress-bar"></div>
+        </div>
+        <div id="percent-display">0%</div>
+    </div>
+
+    <div id="start-screen">
+        <h1>NEON DASH</h1>
+        <p>Presiona <strong>ESPACIO</strong>, <strong>FLECHA ARRIBA</strong> o <strong>CLIC</strong> para saltar.<br>Mantén presionado para saltar en cadena.</p>
+        <button onclick="startGame()">JUGAR</button>
+    </div>
+
+    <div id="win-screen" class="hidden">
+        <h1 style="color: #00ff88; text-shadow: 0 0 15px #00ff88;">¡NIVEL COMPLETADO!</h1>
+        <p id="win-stats">Completado en 1 intento</p>
+        <button onclick="startGame()">JUGAR DE NUEVO</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const startScreen = document.getElementById("start-screen");
+    const winScreen = document.getElementById("win-screen");
+    const attemptDisplay = document.getElementById("attempt-display");
+    const progressBar = document.getElementById("progress-bar");
+    const percentDisplay = document.getElementById("percent-display");
+    const winStats = document.getElementById("win-stats");
+
+    // --- CONSTANTES DE FÍSICA CALIBRADAS (ESTILO GEOMETRY DASH) ---
+    const BLOCK_SIZE = 36;
+    const GROUND_Y = 330;
+    const PLAYER_SCREEN_X = 140; // Posición fija del cubo en pantalla
+    
+    // Altura de salto = (JUMP_VELOCITY^2) / (2 * GRAVITY) ≈ 81px (2.25 bloques)
+    // Duración del salto en suelo plano = 2 * |JUMP_VELOCITY| / GRAVITY ≈ 26.6 frames
+    // Distancia horizontal recorrida en un salto = 26.6 * 6.8 ≈ 181px (5.0 bloques)
+    const GRAVITY = 0.92;
+    const JUMP_VELOCITY = -12.25;
+    const GAME_SPEED = 6.8;
+    const ROTATION_SPEED = 180 / 26.6; // Gira exactamente 180° por salto completo
+
+    let isPlaying = false;
+    let isDead = false;
+    let attempt = 1;
+    let worldX = 0; // Distancia recorrida por el jugador en el mundo
+    let isHoldingJump = false;
+    let jumpBufferFrames = 0; // Permite presionar salto unos frames antes de tocar el suelo
+    let particles = [];
+    let levelLength = 0;
+
+    const player = {
+        y: GROUND_Y - BLOCK_SIZE,
+        size: BLOCK_SIZE,
+        vy: 0,
+        rotation: 0,
+        grounded: true,
+        color: "#00ff88",
+        innerColor: "#00f3ff"
+    };
+
+    // Nivel calibrado a la física de salto (5 bloques de alcance horizontal, 2.2 de alto)
+    const RAW_LEVEL = [
+        // 1. Pincho simple
+        { x: 16, y: 0, type: 'spike' },
+
+        // 2. Doble pincho
+        { x: 27, y: 0, type: 'spike' },
+        { x: 28, y: 0, type: 'spike' },
+
+        // 3. Escalera de 3 niveles (separados 4 bloques entre sí para salto cómodo)
+        { x: 38, y: 0, type: 'block' },
+        { x: 42, y: 0, type: 'block' },
+        { x: 42, y: 1, type: 'block' },
+        { x: 46, y: 0, type: 'block' },
+        { x: 46, y: 1, type: 'block' },
+        { x: 46, y: 2, type: 'block' },
+
+        // Foso de pinchos debajo de la bajada
+        { x: 47, y: 0, type: 'spike' },
+        { x: 48, y: 0, type: 'spike' },
+        { x: 49, y: 0, type: 'spike' },
+        { x: 50, y: 0, type: 'block' },
+        { x: 51, y: 0, type: 'block' },
+
+        // 4. Triple pincho (requiere salto bien medido)
+        { x: 62, y: 0, type: 'spike' },
+        { x: 63, y: 0, type: 'spike' },
+        { x: 64, y: 0, type: 'spike' },
+
+        // 5. Plataformas elevadas
+        { x: 74, y: 1, type: 'block' },
+        { x: 75, y: 1, type: 'block' },
+        { x: 76, y: 1, type: 'block' },
+        { x: 77, y: 1, type: 'spike' },
+
+        { x: 81, y: 2, type: 'block' },
+        { x: 82, y: 2, type: 'block' },
+        { x: 83, y: 2, type: 'block' },
+
+        // 6. Recta final
+        { x: 92, y: 0, type: 'spike' },
+        { x: 93, y: 0, type: 'spike' },
+        { x: 101, y: 0, type: 'block' },
+        { x: 102, y: 0, type: 'spike' },
+        { x: 103, y: 0, type: 'spike' },
+        { x: 104, y: 0, type: 'block' },
+        { x: 104, y: 1, type: 'block' },
+        { x: 113, y: 0, type: 'spike' },
+        { x: 114, y: 0, type: 'spike' },
+        { x: 115, y: 0, type: 'spike' }
+    ];
+
+    let obstacles = [];
+
+    function buildLevel() {
+        obstacles = RAW_LEVEL.map(item => ({
+            x: item.x * BLOCK_SIZE,
+            y: GROUND_Y - (item.y + 1) * BLOCK_SIZE,
+            w: BLOCK_SIZE,
+            h: BLOCK_SIZE,
+            type: item.type
+        }));
+        levelLength = 124 * BLOCK_SIZE;
+    }
+
+    function resetAttempt() {
+        worldX = 0;
+        player.y = GROUND_Y - player.size;
+        player.vy = 0;
